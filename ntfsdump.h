@@ -1,9 +1,16 @@
-#ifndef __FILES_H__
-#define __FILES_H__
+#ifndef __NTFS_DUMP_H__
+#define __NTFS_DUMP_H__
 
 #include <stdint.h>
-#include <macros.h>
 
+// useful macros
+#define MERGE(a,b)  a##b
+#define LABEL1(a) MERGE(_unknown, a)
+#define LABEL2(a) MERGE(_unused, a)
+#define Unknown LABEL1(__LINE__)
+#define Unused  LABEL2(__LINE__)
+
+//　VolumeHeader is defined on ch4
 typedef struct __attribute__((packed)) {
     uint8_t     Entry[3];
     uint8_t     OEM[8];

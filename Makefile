@@ -1,5 +1,5 @@
 ntfsdump : ntfsdump.c 
-	gcc -o $@ -Iinclude $^
+	gcc -o $@ $^
 
 clean:
 	rm -f ntfsdump

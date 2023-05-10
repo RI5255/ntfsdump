@@ -6,18 +6,20 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 
-#include <files.h>
+#include "ntfsdump.h"
 
-#define PATH "sc2023_sd.dd"
-
-int main(void) { 
+int main(int argc, char *argv[]) { 
     int fd;
     struct stat sb;
     uint8_t *base;
     VolumeHeader *hdr;
 
+    if(argc != 2) {
+        puts("Usage: ./ntfsdump <path>");
+        exit(1);
+    }
 
-    if((fd = open(PATH, O_RDONLY)) == -1) {
+    if((fd = open(argv[1], O_RDONLY)) == -1) {
         perror("open: ");
         exit(1);
     }
