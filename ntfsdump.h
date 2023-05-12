@@ -44,6 +44,8 @@ typedef struct __attribute__((packed)) {
 } VolumeHeader;
 
 #define entry_size(s) (128 <= (s) ? 1 << (256 - (s)) : (s))
+// hdrはVolumeHeader*型
+#define cluster_size(hdr) (hdr->BytesPerSector * sectors_per_cluster_block(hdr->SectorsPerClusterBlock))
 #define sectors_per_cluster_block(s) (244 <= (s) ? 1<<(256 - (s)) : (s))
 
 // MFTEntryHeader dedined on 5
@@ -113,10 +115,16 @@ typedef enum {
     ATTRIBUTE_FLAG_SPARSE           = 0x8000
 } MFTAttributeDataFlags;
 
+// hdrはMFTAttributeHeader*型。
+#define attr(hdr) ((uint8_t *)hdr + sizeof(MFTAttributeHeader))
+
+// hdrはMFTAttributeHeader*型。
+#define next_attr(hdr) ((MFTAttributeHeader *)((uint8_t *)hdr + hdr->Size))
+
 // ResidentMFTAttribute defined on 5.5.2
 typedef struct __attribute__((packed)) {
     uint32_t    DataSize;
-    uint16_t    DataOffset; // from MFTAttribute
+    uint16_t    DataOffset; // from MFTAttributeHeader
     uint8_t     IndexedFlag;
     uint8_t     Padding;
 } ResidentMFTAttribute;
@@ -133,6 +141,9 @@ typedef struct __attribute__((packed)) {
     uint64_t    ValidDataSize;
     // uint64_t    TotalAllocatedSize; used if CompressionUnitSize > 0
 } NonResidentMFTAttribute;
+
+// hdrはMFTEntryHeader*型。
+#define data_run_list(hdr) ((uint8_t *)hdr + ((NonResidentMFTAttribute *)attr(hdr))->DataRunsOffset)
 
 // FileNameAttribute defined on 6.4
 typedef struct __attribute__((packed)) {
@@ -157,5 +168,22 @@ typedef enum {
     DOS,
     DOS_WINDOWS
 } NameSpace;
+
+// hdrはMFTEntryHeader*型かつResident。
+#define fname_attribute(hdr) ((FileNameAttribute *)((uint8_t *)hdr + ((ResidentMFTAttribute *)attr(hdr))->DataOffset))
+
+// $MFTの$DATAがNon-residentだった場合に使用される。
+typedef struct {
+    bool            NonResidentFlag;
+    uint64_t        NumEntry;
+    MFTEntryHeader *Hdr[1]; // とりあえず1つのみ。
+} MFTEntryTable;
+
+typedef struct {
+    uint64_t        ClusterSize;
+    uint64_t        MFTEntrySize;
+    uint8_t         *Base;
+    MFTEntryTable   EntryTable;
+} Info;
 
 #endif 
