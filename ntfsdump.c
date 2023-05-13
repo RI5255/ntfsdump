@@ -78,7 +78,7 @@ static void printDataList(uint8_t *l) {
     deltaLen = (l[i]>>4) & 0x0f;
     i++;
 
-    while(dataLen && deltaLen) {
+    while(dataLen != 0 ||  deltaLen != 0) {
         for(int j = 0; j < dataLen; j++) {
             len += l[i++] << 8 * j;
         }
@@ -124,6 +124,9 @@ static char * time2str(time_t t) {
 }
 
 static void parseFnameAttribute(MFTAttributeHeader *hdr) {
+    if(!hdr)
+        return;
+    
     puts("FILE_NAME:");
 
      // Non-residentだった場合はとりあえず何もしない
@@ -153,18 +156,26 @@ static void parseFnameAttribute(MFTAttributeHeader *hdr) {
     );
 }
 
-static void parseDataAttribute(MFTAttributeHeader *hdr) {
+// DATAは複数存在する可能性がある。
+static void parseDataAttributes(DataList *l) {
+    if(!l->len) {
+        return;
+    }
+
     puts("Data:");
     puts("offset size");
 
-    if(hdr->NonRegidentFlag) {
-       printDataList(data_run_list(hdr));
-    } else {
-        printf(
-            "+%#lx %#x\n",
-            (uint8_t *)hdr - info.Base + ((ResidentMFTAttribute *)attr(hdr))->DataOffset,
-            ((ResidentMFTAttribute *)attr(hdr))->DataSize
-        );
+    for(int i = 0; i < l->len; i++) {
+        MFTAttributeHeader *hdr = l->hdr[i];
+        if(hdr->NonRegidentFlag) {
+            printDataList(data_run_list(hdr));
+        } else {
+            printf(
+                "+%#lx %#x\n",
+                (uint8_t *)hdr - info.Base + ((ResidentMFTAttribute *)attr(hdr))->DataOffset,
+                ((ResidentMFTAttribute *)attr(hdr))->DataSize
+            );
+        }
     }
     putchar('\n');
 }
@@ -210,7 +221,12 @@ static void parseMFTEntry(uint64_t i) {
 
 
     MFTAttributeHeader *ahdr = (MFTAttributeHeader *)((uint8_t *)ehdr + ehdr->AttributeOffset);
-    MFTAttributeHeader *fname = NULL, *data = NULL;
+    MFTAttributeHeader *fname = NULL;
+    DataList l = (DataList) {
+        .cap = 3, // とりあえず3
+        .len = 0, 
+        .hdr = calloc(3, sizeof(DataList *))
+    };
     
     // MFTEntryに含まれるMFTAttributeの一覧を表示する。
     puts("Attributes:");
@@ -230,7 +246,9 @@ static void parseMFTEntry(uint64_t i) {
                 fname = ahdr;
                 break;
             case DATA:
-                data = ahdr;
+                if(l.len < l.cap) {
+                    l.hdr[l.len++] = ahdr;
+                }
                 break;
         }
 
@@ -238,10 +256,8 @@ static void parseMFTEntry(uint64_t i) {
     }
     putchar('\n');
 
-    if(fname)
-        parseFnameAttribute(fname);
-    if(data)
-        parseDataAttribute(data);
+    parseFnameAttribute(fname);
+    parseDataAttributes(&l);
 }
 
 // MFTEntryに含まれるAttributeから指定した種類のものを探す

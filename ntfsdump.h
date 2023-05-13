@@ -190,4 +190,10 @@ typedef struct {
     MFTEntryTable   EntryTable;
 } Info;
 
+typedef struct {
+    int cap;
+    int len;
+    MFTAttributeHeader **hdr;
+} DataList;
+
 #endif 
