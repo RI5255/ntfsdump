@@ -148,17 +148,17 @@ typedef struct __attribute__((packed)) {
 // FileNameAttribute defined on 6.4
 typedef struct __attribute__((packed)) {
     uint64_t    ParentFileRef;
-    uint64_t    CTime; // creation data and time
-    uint64_t    WTime; // last written data and time
-    uint64_t    MTime; // last modification data and time
-    uint64_t    ATime; // last access data and time
+    time_t      CTime; // creation data and time
+    time_t      WTime; // last written data and time
+    time_t      MTime; // last modification data and time
+    time_t      ATime; // last access data and time
     uint64_t    AllocatedFileSize;
     uint64_t    FileSize;
     uint32_t    FileAttributeFlags;
     uint32_t    ExtendedData;
     uint8_t     NameStringSize;
     uint8_t     Namespace;
-    uint8_t     Name[];
+    char16_t    Name[];
 } FileNameAttribute;
 
 // NameSpace defined on 6.4.1

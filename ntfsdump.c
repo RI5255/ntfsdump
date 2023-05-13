@@ -6,6 +6,10 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <uchar.h>
+#include <locale.h>
+#include <time.h>
+#include <string.h>
 
 #include "ntfsdump.h"
 
@@ -26,7 +30,7 @@ static void cmpAndRestore(uint16_t *fixup, uint16_t *end) {
         *fixup,
         *(end -1)
     );
-    
+
     printf(
         "\toverwirte %.4x with %.4x\n",
         *(end - 1),
@@ -141,17 +145,51 @@ static void parseRunsList(uint8_t *l) {
     };
 }
 
-static void parseFnameAttribute(FileNameAttribute *attr) {
-    // ファイル名を表示
-    printf(
-        "NameSpace: %#x(%s)\nFileName : ",
-        attr->Namespace,
-        printNameSpace(attr->Namespace)
+// Windows時間を文字列に変換する。(秒単位の誤差が出る)
+static char * time2str(time_t t) {
+    struct tm *p;
+    char *buf = calloc(1, 30);
+
+    t /= 0x989680L; // 秒単位に直す
+    t -= 0x20e76L * 0x15180L; // unix timeに変換
+
+    p = localtime(&t);
+
+    snprintf(
+        buf,
+        30,
+        "%d-%d-%d %d:%d:%d (JST)",
+        p->tm_year + 1900,
+        p->tm_mon + 1,
+        p->tm_mday,
+        p->tm_hour,
+        p->tm_min,
+        p->tm_sec
     );
-    for(int i = 0; i < attr->NameStringSize; i++) {
-        printf("%c", attr->Name[i * 2]);
+    
+    return buf;
+}
+
+static void parseFnameAttribute(FileNameAttribute *attr) {
+    // 使い方合ってるかは知らん。まあ動いてるのでヨシ!
+    setlocale(LC_ALL, "en_US.UTF-8");
+    size_t n = 0;
+    char fname[100] = {0};
+    mbstate_t ps = {0};
+
+    size_t len = 0;
+    for(int i = 0; i < 22; i++) {
+        n  = c16rtomb(fname + len, attr->Name[i], &ps);
+        len += n;
     }
-    putchar('\n');
+    printf("%s\n", fname);
+
+    // 作成日時と最終変更日時を表示(秒は誤差がある。)
+    printf(
+        "C: %s\nM: %s\n",
+        time2str(attr->CTime),
+        time2str(attr->MTime)
+    );
 }
 
 static void parseFname(MFTAttributeHeader *hdr) {
