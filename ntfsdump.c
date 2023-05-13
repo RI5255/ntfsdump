@@ -25,22 +25,6 @@ static void cmpAndRestore(uint16_t *fixup, uint16_t *end) {
     );
 }
 
-// MFTEntryFlagを文字列に変換
-static char * printMFTEntryFlags(uint16_t flag) {
-    switch(flag) {
-        case MFT_RECORD_IN_USE:
-            return "MFT_RECORD_IN_USE";
-        case MFT_RECORD_IS_DIRECTORY:
-            return "MFT_RECORD_IS_DIRECTORY";
-        case MFT_RECORD_IN_EXTEND:
-            return "MFT_RECORD_IN_EXTEND";
-        case MFT_RECORD_IS_VIEW_INDEX:
-            return "MFT_RECORD_IS_VIEW_INDEX";
-        default:
-            return "";
-    }
-}
-
 // AttributeTypeを文字列に変換
 static char * printAttributeType(uint32_t ty) {
     switch(ty) {
@@ -76,22 +60,6 @@ static char * printAttributeType(uint32_t ty) {
             return "LOGGED_UTILITY_STREAM";
         case END_OF_ATTRIBUTE:
             return "END_OF_ATTRIBUTE";
-        default:
-            return "";
-    }
-}
-
-// NameSpaceを文字列に変換
-static char * printNameSpace(uint8_t v) {
-    switch(v) {
-        case POSIX:
-            return "POSIX";
-        case WINDOWS:
-            return "WINDOWS";
-        case DOS:
-            return "DOS";
-        case DOS_WINDOWS:
-            return "DOS_WINDOS";
         default:
             return "";
     }
@@ -165,7 +133,7 @@ static void parseFnameAttribute(FileNameAttribute *attr) {
     mbstate_t ps = {0};
 
     size_t len = 0;
-    for(int i = 0; i < 22; i++) {
+    for(int i = 0; i < attr->NameStringSize; i++) {
         n  = c16rtomb(fname + len, attr->Name[i], &ps);
         len += n;
     }
@@ -180,9 +148,6 @@ static void parseFnameAttribute(FileNameAttribute *attr) {
 }
 
 static void parseFname(MFTAttributeHeader *hdr) {
-    ResidentMFTAttribute *regidentAttr;
-    FileNameAttribute *fnameAttr;
-    
     if(hdr->NonRegidentFlag) {
         // Non-residentだった場合はとりあえずData run listを表示するだけ
         parseRunsList(data_run_list(hdr));
@@ -231,23 +196,6 @@ static void parseMFTAttribute(MFTAttributeHeader *hdr) {
     }
 }
 
-// 壊れたファイルの場合に使用する。
-static void tryToParseMFTAttribute(MFTAttributeHeader *hdr) {
-    printMFTAttributeInfo(hdr);
-
-    if(hdr->NonRegidentFlag) {
-        // Non-residentだった場合はとりあえずData run listを表示するだけ
-        parseRunsList(data_run_list(hdr));
-    } else {
-        // Residentだった場合はデータがある。
-        printf(
-            "Data offset: %#x Data size: %#x\n",
-            ((ResidentMFTAttribute *)attr(hdr))->DataOffset,
-            ((ResidentMFTAttribute *)attr(hdr))->DataSize
-        );
-    }
-}
-
 static void parseMFTAttributes(MFTAttributeHeader *hdr) {
     puts("MFT Attributes");
 
@@ -259,18 +207,14 @@ static void parseMFTAttributes(MFTAttributeHeader *hdr) {
     }
 }
 
-// 壊れたファイルの場合に使用する。
-static void tryToParseMFTAttributes(MFTAttributeHeader *hdr) {
-    while(hdr->AttributeType && hdr->AttributeType != END_OF_ATTRIBUTE) {
-        printf("+%#lx\n", (uint8_t *)hdr - info.Base);
-        tryToParseMFTAttribute(hdr);
-        putchar('\n');
-        hdr = next_attr(hdr);
-    }
-}
-
 static void parseMFTEntry(uint64_t i) {
     MFTEntryHeader *hdr = (MFTEntryHeader *)((uint8_t *)info.EntryTable.Hdr[0] + info.MFTEntrySize * i);
+    // 未使用の領域なら、AttributeOffsetは0になっているだろうという予想。本当は$BITMAPを読むべき。
+    if(!hdr->AttributeOffset) {
+        puts("unused entry");
+        return;
+    }
+
     printf(
         "MFT Entry(+%#lx)\n",
         (uint8_t *)hdr - info.Base
@@ -299,18 +243,12 @@ static void parseMFTEntry(uint64_t i) {
     );
 
     printf(
-        "EntryFlags: %#x(%s)\n\n",
-        hdr->EntryFlags,
-        printMFTEntryFlags(hdr->EntryFlags)
+        "EntryFlags: %#x\n\n",
+        hdr->EntryFlags
     );
 
     MFTAttributeHeader *attrhdr = (MFTAttributeHeader *)((uint8_t *)hdr + hdr->AttributeOffset);
-
-    if(hdr->EntryFlags == MFT_RECORD_IN_USE || hdr->EntryFlags == 0x0003) {
-        parseMFTAttributes(attrhdr);
-    } else {
-        tryToParseMFTAttributes(attrhdr);
-    }
+    parseMFTAttributes(attrhdr);
 }
 
 // MFTEntryに含まれるAttributeから指定した種類のものを探す
@@ -391,7 +329,6 @@ static void parseVolume(VolumeHeader *hdr) {
         printf("index: ");
 
         scanf("%lu", &i);
-        putchar('\n');
         
         if(info.EntryTable.NumEntry <= i) {
             puts("invalid index");

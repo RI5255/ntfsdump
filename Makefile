@@ -1,5 +1,5 @@
 ntfsdump : ntfsdump.c 
-	gcc -o $@ $^
+	gcc -Wall -o $@ $^
 
 clean:
 	rm -f ntfsdump

@@ -82,13 +82,6 @@ typedef struct __attribute__((packed)) {
     uint32_t        Unknown;
 } MFTEntryHeader;
 
-typedef enum {
-    MFT_RECORD_IN_USE           = 1,
-    MFT_RECORD_IS_DIRECTORY     = 1<<2,
-    MFT_RECORD_IN_EXTEND        = 1<<3,
-    MFT_RECORD_IS_VIEW_INDEX    = 1<<4
-} MFTEntryflags;
-
 // MFTAttributeHeader defined on 5.5.1
 typedef struct __attribute__((packed)) {
     uint32_t    AttributeType;
