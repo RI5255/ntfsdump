@@ -1,7 +1,18 @@
 #ifndef __NTFS_DUMP_H__
 #define __NTFS_DUMP_H__
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <stdint.h>
+#include <stdbool.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <uchar.h>
+#include <locale.h>
+#include <time.h>
+#include <string.h>
 
 // useful macros
 #define MERGE(a,b)  a##b

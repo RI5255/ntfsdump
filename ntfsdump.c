@@ -1,16 +1,3 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <sys/mman.h>
-#include <uchar.h>
-#include <locale.h>
-#include <time.h>
-#include <string.h>
-
 #include "ntfsdump.h"
 
 Info info;
@@ -166,7 +153,7 @@ static char * time2str(time_t t) {
         p->tm_min,
         p->tm_sec
     );
-    
+
     return buf;
 }
 
