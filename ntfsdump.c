@@ -65,8 +65,8 @@ static char * printAttributeType(uint32_t ty) {
     }
 }
 
-// Non-residentだったときに使う。
-static void parseRunsList(uint8_t *l) {
+// DATAがNon-residentだったときに使う。
+static void printDataList(uint8_t *l) {
     // 先頭1byteの下位4bitがdataの長さを、上位4bitがoffsetの長さをbyte単位で表す。
     int i = 0;
     uint8_t dataLen, deltaLen;
@@ -74,7 +74,6 @@ static void parseRunsList(uint8_t *l) {
     // delataは符号付で、前のrunsのoffsetからの相対値(クラスタ単位)になる。
     int64_t delta = 0, offset = 0;
 
-    puts("Data run list");
     dataLen  = l[i] & 0x0f;
     deltaLen = (l[i]>>4) & 0x0f;
     i++;
@@ -88,10 +87,9 @@ static void parseRunsList(uint8_t *l) {
         }
         offset += delta;
         printf(
-            "dataLen: %#lx delta: %+ld offset: %+ld\n",
-            len,
-            delta,
-            offset
+            "+%#lx %#lx\n",
+            offset * info.ClusterSize,
+            len * info.ClusterSize
         );
         len = delta = 0;
         dataLen  = l[i] & 0x0f;
@@ -125,7 +123,15 @@ static char * time2str(time_t t) {
     return buf;
 }
 
-static void parseFnameAttribute(FileNameAttribute *attr) {
+static void parseFnameAttribute(MFTAttributeHeader *hdr) {
+    puts("FILE_NAME:");
+
+     // Non-residentだった場合はとりあえず何もしない
+    if(hdr->NonRegidentFlag)
+        return;
+    
+    FileNameAttribute *attr = fname_attribute(hdr);
+    
     // 使い方合ってるかは知らん。まあ動いてるのでヨシ!
     setlocale(LC_ALL, "en_US.UTF-8");
     size_t n = 0;
@@ -137,118 +143,105 @@ static void parseFnameAttribute(FileNameAttribute *attr) {
         n  = c16rtomb(fname + len, attr->Name[i], &ps);
         len += n;
     }
-    printf("%s\n", fname);
+    printf("name: %s\n", fname);
 
     // 作成日時と最終変更日時を表示(秒は誤差がある。)
     printf(
-        "C: %s\nM: %s\n",
+        "CTime: %s\nMTime: %s\n\n",
         time2str(attr->CTime),
         time2str(attr->MTime)
     );
 }
 
-static void parseFname(MFTAttributeHeader *hdr) {
-    if(hdr->NonRegidentFlag) {
-        // Non-residentだった場合はとりあえずData run listを表示するだけ
-        parseRunsList(data_run_list(hdr));
-    } else {
-        parseFnameAttribute(fname_attribute(hdr));
-    }
-}
+static void parseDataAttribute(MFTAttributeHeader *hdr) {
+    puts("Data:");
+    puts("offset size");
 
-static void parseData(MFTAttributeHeader *hdr) {
     if(hdr->NonRegidentFlag) {
-        // Non-residentだった場合はとりあえずData run listを表示するだけ
-        parseRunsList(data_run_list(hdr));
+       printDataList(data_run_list(hdr));
     } else {
-        // Residentだった場合はデータがある。
         printf(
-            "Data offset: %#x Data size: %#x\n",
-            ((ResidentMFTAttribute *)attr(hdr))->DataOffset,
+            "+%#lx %#x\n",
+            (uint8_t *)hdr - info.Base + ((ResidentMFTAttribute *)attr(hdr))->DataOffset,
             ((ResidentMFTAttribute *)attr(hdr))->DataSize
         );
     }
-}
-
-// MFTAttributeの基本情報を表示
-static void printMFTAttributeInfo(MFTAttributeHeader *hdr) {
-    // 全てのAttribute共通の情報を表示
-    printf(
-        "type: %#x(%s)\nSize: %#x\nNon-resident: %#x\n",
-        hdr->AttributeType,
-        printAttributeType(hdr->AttributeType),
-        hdr->Size,
-        hdr->NonRegidentFlag
-    );
-}
-
-static void parseMFTAttribute(MFTAttributeHeader *hdr) {
-    printMFTAttributeInfo(hdr);
-
-    // Attributeの種類に応じて追加の処理を行う。
-    switch (hdr->AttributeType) {
-        case FILE_NAME:
-            parseFname(hdr);
-            break;
-        case DATA:
-            parseData(hdr);
-            break;
-    }
-}
-
-static void parseMFTAttributes(MFTAttributeHeader *hdr) {
-    puts("MFT Attributes");
-
-    while(hdr->AttributeType != END_OF_ATTRIBUTE) {
-        printf("+%#lx\n", (uint8_t *)hdr - info.Base);
-        parseMFTAttribute(hdr);
-        putchar('\n');
-        hdr = next_attr(hdr);
-    }
+    putchar('\n');
 }
 
 static void parseMFTEntry(uint64_t i) {
-    MFTEntryHeader *hdr = (MFTEntryHeader *)((uint8_t *)info.EntryTable.Hdr[0] + info.MFTEntrySize * i);
+    MFTEntryHeader *ehdr = (MFTEntryHeader *)((uint8_t *)info.EntryTable.Hdr[0] + info.MFTEntrySize * i);
     // 未使用の領域なら、AttributeOffsetは0になっているだろうという予想。本当は$BITMAPを読むべき。
-    if(!hdr->AttributeOffset) {
+    if(!ehdr->AttributeOffset) {
         puts("unused entry");
         return;
     }
 
     printf(
         "MFT Entry(+%#lx)\n",
-        (uint8_t *)hdr - info.Base
+        (uint8_t *)ehdr - info.Base
     );
     printf(
         "Signature: %.4s\n",
-        hdr->Signature
+        ehdr->Signature
     );
     puts("FixupValue:");
     printf(
         "\toffset: %#x\n\tnum: %#x\n",
-        hdr->FixupValueOffset,
-        hdr->NumberOfFixupValues
+        ehdr->FixupValueOffset,
+        ehdr->NumberOfFixupValues
     );
 
     cmpAndRestore(
-        (uint16_t *)((uint8_t *)hdr + hdr->FixupValueOffset),
-        (uint16_t *)((uint8_t *)hdr + hdr->TotalEntrySize)
+        (uint16_t *)((uint8_t *)ehdr + ehdr->FixupValueOffset),
+        (uint16_t *)((uint8_t *)ehdr + ehdr->TotalEntrySize)
     );
     
     printf(
-        "AttributeOffset: %#x\nUsedEntrySize: %#x\nTotalEntrySize: %#x\n",
-        hdr->AttributeOffset,
-        hdr->UsedEntrySize,
-        hdr->TotalEntrySize
+        "UsedEntrySize: %#x\nTotalEntrySize: %#x\n",
+        ehdr->UsedEntrySize,
+        ehdr->TotalEntrySize
     );
 
     printf(
         "EntryFlags: %#x\n\n",
-        hdr->EntryFlags
+        ehdr->EntryFlags
     );
 
-    MFTAttributeHeader *attrhdr = (MFTAttributeHeader *)((uint8_t *)hdr + hdr->AttributeOffset);
-    parseMFTAttributes(attrhdr);
+
+    MFTAttributeHeader *ahdr = (MFTAttributeHeader *)((uint8_t *)ehdr + ehdr->AttributeOffset);
+    MFTAttributeHeader *fname = NULL, *data = NULL;
+    
+    // MFTEntryに含まれるMFTAttributeの一覧を表示する。
+    puts("Attributes:");
+    puts("offset type size non-resident?");
+    while(ahdr->AttributeType != END_OF_ATTRIBUTE) {
+        printf(
+            "+%#lx: %#x(%s) %#x %d\n",
+            (uint8_t *)ahdr - info.Base,
+            ahdr->AttributeType,
+            printAttributeType(ahdr->AttributeType),
+            ahdr->Size,
+            ahdr->NonRegidentFlag
+        );
+        
+        switch(ahdr->AttributeType) {
+            case FILE_NAME:
+                fname = ahdr;
+                break;
+            case DATA:
+                data = ahdr;
+                break;
+        }
+
+        ahdr = next_attr(ahdr);
+    }
+    putchar('\n');
+
+    if(fname)
+        parseFnameAttribute(fname);
+    if(data)
+        parseDataAttribute(data);
 }
 
 // MFTEntryに含まれるAttributeから指定した種類のものを探す
