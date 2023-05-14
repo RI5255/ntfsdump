@@ -147,7 +147,7 @@ static void parseDataRuns(uint8_t *r, List *l) {
     uint8_t dataLen, deltaLen;
     uint64_t len = 0;
     // delataは符号付で、前のrunsのoffsetからの相対値(クラスタ単位)になる。
-    int64_t delta = 0, offset = 0;
+    uint64_t delta = 0, offset = 0;
 
     dataLen  = r[i] & 0x0f;
     deltaLen = (r[i]>>4) & 0x0f;
@@ -160,7 +160,13 @@ static void parseDataRuns(uint8_t *r, List *l) {
         for(int j = 0; j < deltaLen; j++) {
             delta += r[i++] << 8 * j;
         }
-        offset += delta;
+
+        // 負の値だった場合
+        if(delta>>(8*deltaLen-1)){
+            offset -= ((1<<deltaLen*8) - delta);
+        } else {
+            offset += delta;
+        }
 
         if(l->len < l->cap) {
             l->data[l->len++] = newData(
