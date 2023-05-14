@@ -261,9 +261,12 @@ static void printAttributes(File *f) {
 
 // Fileが持つdataの一覧を表示
 static void printDataList(File *f) {
-    puts("Data list:");
-
     List *l = f->data;
+   
+    if(!l->len)
+        return;
+    
+    puts("Data list:");
     Data *d;
 
     for(int i = 0; i < l->len; i++) {
@@ -329,6 +332,56 @@ static MFTEntryHeader * idx2entry(uint64_t i) {
     return (MFTEntryHeader *)((uint8_t *)((Data *)(d->data[0]))->p + i * volume.mftEntrySize);
 }
 
+// ファイルが持っているデータをファイルに保存する
+static void saveData(File *f) {
+    List *l = f->data;
+    Data *d;
+    int fd;
+    ssize_t n;
+
+    char *fname = calloc(1, strlen(f->name) + 10);
+
+    for(int i = 0; i < l->len; i++) {
+        d = l->data[i];
+        sprintf(
+            fname, 
+            "%s%d", 
+            f->name,
+            i
+        );
+
+        fd = open(
+            fname,
+            O_WRONLY|O_CREAT,
+            S_IRUSR|S_IWUSR
+        );
+
+        if(fd == -1) {
+            perror("open: ");
+            continue;
+        }
+
+        n = write(fd, d->p, d->size);
+
+        if(n == -1) {
+            perror("write: ");
+            close(fd);
+            continue;
+        }
+
+        printf(
+            "%d -> %s(%#lx bytes)\n",
+            i,
+            fname,
+            n
+        );
+
+        close(fd);
+    }
+
+    free(fname);
+}
+
 int main(int argc, char *argv[]) { 
     int fd;
     struct stat sb;
@@ -374,6 +427,7 @@ int main(int argc, char *argv[]) {
     uint64_t i;
     MFTEntryHeader *e;
     File *f;
+
     while(true) {
         printf("index: ");
 
@@ -394,6 +448,11 @@ int main(int argc, char *argv[]) {
         }
 
         printFileInfo(f);
+
+        if(f->data->len) {
+            saveData(f);
+        }
+
         deleteFile(f);
     }
 
