@@ -1,28 +1,49 @@
 #include "ntfsdump.h"
 
-Info info;
+static Volume volume;
+static File *mft;
 
-// update sequenceを比較して、一致していたら元の値を書き戻す。(とりあえず今は一致するか確認するだけ)
-static void cmpAndRestore(uint16_t *fixup, uint16_t *end) {
-    if(*fixup != *(end -1)) {
-        printf(
-            "\tcmp %.4x %.4x\n",
-            *fixup,
-            *(end -1)
-        );
+static List * newList(int n) {
+    List *l = calloc(1, sizeof(List));
+
+    l->cap  = n;
+    l->data = calloc(n, sizeof(void *));
+
+    return l;
+}
+
+static Data * newData(void *p, uint64_t size) {
+    Data *d =  calloc(1, sizeof(Data));
+    
+    *d = (Data){
+        .p = p,
+        .size   = size
+    };
+
+    return d;
+}
+
+static void deleteList(List *l, ListType ty) {
+    switch(ty) {
+        case D:
+            for(int i = 0; i < l->cap; i++) {
+                free(l->data[i]);
+            }
+        case A:
+            free(l->data);
     }
+    free(l);
+}
 
-    printf(
-        "\tcmp %.4x %.4x\n",
-        *fixup,
-        *(end -1)
-    );
+#define try_free(p) if(p) free(p);
 
-    printf(
-        "\toverwirte %.4x with %.4x\n",
-        *(end - 1),
-        *(fixup + 1)
-    );
+static void deleteFile(File *f) {
+    try_free(f->name);
+    try_free(f->CTIME);
+    try_free(f->MTIME);
+    deleteList(f->attr, A);
+    deleteList(f->data, D);
+    free(f);
 }
 
 // AttributeTypeを文字列に変換
@@ -65,39 +86,6 @@ static char * printAttributeType(uint32_t ty) {
     }
 }
 
-// DATAがNon-residentだったときに使う。
-static void printDataList(uint8_t *l) {
-    // 先頭1byteの下位4bitがdataの長さを、上位4bitがoffsetの長さをbyte単位で表す。
-    int i = 0;
-    uint8_t dataLen, deltaLen;
-    uint64_t len = 0;
-    // delataは符号付で、前のrunsのoffsetからの相対値(クラスタ単位)になる。
-    int64_t delta = 0, offset = 0;
-
-    dataLen  = l[i] & 0x0f;
-    deltaLen = (l[i]>>4) & 0x0f;
-    i++;
-
-    while(dataLen != 0 ||  deltaLen != 0) {
-        for(int j = 0; j < dataLen; j++) {
-            len += l[i++] << 8 * j;
-        }
-        for(int j = 0; j < deltaLen; j++) {
-            delta += l[i++] << 8 * j;
-        }
-        offset += delta;
-        printf(
-            "+%#lx %#lx\n",
-            offset * info.ClusterSize,
-            len * info.ClusterSize
-        );
-        len = delta = 0;
-        dataLen  = l[i] & 0x0f;
-        deltaLen = (l[i]>>4) & 0x0f;
-        i++;
-    };
-}
-
 // Windows時間を文字列に変換する。(秒単位の誤差が出る)
 static char * time2str(time_t t) {
     struct tm *p;
@@ -123,13 +111,111 @@ static char * time2str(time_t t) {
     return buf;
 }
 
-static void parseFnameAttribute(MFTAttributeHeader *hdr) {
-    if(!hdr)
-        return;
-    
-    puts("FILE_NAME:");
+// Entryの全てのattributeをリストに登録して返す
+static List * collectAttributes(MFTEntryHeader *hdr) {
+    List *l = newList(10);
+    MFTAttributeHeader *ahdr = attr_hdr(hdr);
 
-     // Non-residentだった場合はとりあえず何もしない
+    while(ahdr->AttributeType != END_OF_ATTRIBUTE) {
+        if(l->len < l->cap) {
+             l->data[l->len++] = ahdr;
+        }
+        ahdr = next_attr(ahdr);
+    }
+
+    return l;
+}
+
+// リストから指定したタイプのAttributeのリストを返す
+// O(n)だけど、nは小さいのでヨシ!
+static List * getAttribute(List *l, AttributeTypes ty) {
+    List *list = newList(10);
+
+    for(int i = 0; i < l->len; i++) {
+        if(((MFTAttributeHeader *)l->data[i])->AttributeType == ty && list->len < list->cap) {
+            list->data[list->len++] = l->data[i];     
+        }
+    }
+
+    return list;
+}
+
+// DataRunsを解析してリストに登録(Non-residentの場合に使う)
+static void parseDataRuns(uint8_t *r, List *l) {
+    // 先頭1byteの下位4bitがdataの長さを、上位4bitがoffsetの長さをbyte単位で表す。
+    int i = 0;
+    uint8_t dataLen, deltaLen;
+    uint64_t len = 0;
+    // delataは符号付で、前のrunsのoffsetからの相対値(クラスタ単位)になる。
+    int64_t delta = 0, offset = 0;
+
+    dataLen  = r[i] & 0x0f;
+    deltaLen = (r[i]>>4) & 0x0f;
+    i++;
+
+    while(dataLen != 0 ||  deltaLen != 0) {
+        for(int j = 0; j < dataLen; j++) {
+            len += r[i++] << 8 * j;
+        }
+        for(int j = 0; j < deltaLen; j++) {
+            delta += r[i++] << 8 * j;
+        }
+        offset += delta;
+
+        if(l->len < l->cap) {
+            l->data[l->len++] = newData(
+                (void *)(volume.base + offset * volume.clusterSize)
+                , len * volume.clusterSize
+            );
+        }
+        len = delta = 0;
+        dataLen  = r[i] & 0x0f;
+        deltaLen = (r[i]>>4) & 0x0f;
+        i++;
+    };
+}   
+
+// fileのDATAを解析してサイズとポインタをリストに登録
+static void parseDataAttributes(File *f) {
+    // DATAのリストを取得する
+    List *d = getAttribute(f->attr, DATA);
+
+    // DATAを順に解析してリストに格納。
+    List *l = newList(10);
+    MFTAttributeHeader *hdr;
+    for(int i = 0; i < d->len; i++) {
+        hdr = d->data[i];
+        switch(hdr->NonRegidentFlag) {
+            case 0:
+                if(l->len < l->cap) {
+                    l->data[l->len++] = newData(
+                        (uint8_t *)hdr + ((ResidentMFTAttribute *)attr(hdr))->DataOffset,
+                        ((ResidentMFTAttribute *)attr(hdr))->DataSize
+                    );
+                }
+                break;
+            case 1:
+                parseDataRuns(
+                    data_run_list(hdr),
+                    l
+                );
+                break;
+        }
+    }
+
+    f->data = l;
+    deleteList(d, A);
+}
+
+// fileのFILE_NAMEを解析して得た情報をFile構造体に登録
+static void parseFnameAttribute(File *f) {
+    List *l = getAttribute(f->attr, FILE_NAME);
+    if(!l->len) 
+        goto end;
+    
+    MFTAttributeHeader *hdr = l->data[0];
+
+    // Non-residentだった場合はとりあえず何もしない
     if(hdr->NonRegidentFlag)
         return;
     
@@ -138,7 +224,7 @@ static void parseFnameAttribute(MFTAttributeHeader *hdr) {
     // 使い方合ってるかは知らん。まあ動いてるのでヨシ!
     setlocale(LC_ALL, "en_US.UTF-8");
     size_t n = 0;
-    char fname[100] = {0};
+    char *fname = calloc(1, 100);
     mbstate_t ps = {0};
 
     size_t len = 0;
@@ -146,207 +232,101 @@ static void parseFnameAttribute(MFTAttributeHeader *hdr) {
         n  = c16rtomb(fname + len, attr->Name[i], &ps);
         len += n;
     }
-    printf("name: %s\n", fname);
 
-    // 作成日時と最終変更日時を表示(秒は誤差がある。)
-    printf(
-        "CTime: %s\nMTime: %s\n\n",
-        time2str(attr->CTime),
-        time2str(attr->MTime)
-    );
+    f->name     = fname;
+    f->CTIME    =  time2str(attr->CTime);
+    f->MTIME    = time2str(attr->MTime);
+
+    end:
+        deleteList(l, A);
 }
 
-// DATAは複数存在する可能性がある。
-static void parseDataAttributes(DataList *l) {
-    if(!l->len) {
-        return;
-    }
-
-    puts("Data:");
-    puts("offset size");
-
-    for(int i = 0; i < l->len; i++) {
-        MFTAttributeHeader *hdr = l->hdr[i];
-        if(hdr->NonRegidentFlag) {
-            printDataList(data_run_list(hdr));
-        } else {
-            printf(
-                "+%#lx %#x\n",
-                (uint8_t *)hdr - info.Base + ((ResidentMFTAttribute *)attr(hdr))->DataOffset,
-                ((ResidentMFTAttribute *)attr(hdr))->DataSize
-            );
-        }
-    }
-    putchar('\n');
-}
-
-static void parseMFTEntry(uint64_t i) {
-    MFTEntryHeader *ehdr = (MFTEntryHeader *)((uint8_t *)info.EntryTable.Hdr[0] + info.MFTEntrySize * i);
-    // 未使用の領域なら、AttributeOffsetは0になっているだろうという予想。本当は$BITMAPを読むべき。
-    if(!ehdr->AttributeOffset) {
-        puts("unused entry");
-        return;
-    }
-
-    printf(
-        "MFT Entry(+%#lx)\n",
-        (uint8_t *)ehdr - info.Base
-    );
-    printf(
-        "Signature: %.4s\n",
-        ehdr->Signature
-    );
-    puts("FixupValue:");
-    printf(
-        "\toffset: %#x\n\tnum: %#x\n",
-        ehdr->FixupValueOffset,
-        ehdr->NumberOfFixupValues
-    );
-
-    cmpAndRestore(
-        (uint16_t *)((uint8_t *)ehdr + ehdr->FixupValueOffset),
-        (uint16_t *)((uint8_t *)ehdr + ehdr->TotalEntrySize)
-    );
-    
-    printf(
-        "UsedEntrySize: %#x\nTotalEntrySize: %#x\n",
-        ehdr->UsedEntrySize,
-        ehdr->TotalEntrySize
-    );
-
-    printf(
-        "EntryFlags: %#x\n\n",
-        ehdr->EntryFlags
-    );
-
-
-    MFTAttributeHeader *ahdr = (MFTAttributeHeader *)((uint8_t *)ehdr + ehdr->AttributeOffset);
-    MFTAttributeHeader *fname = NULL;
-    DataList l = (DataList) {
-        .cap = 3, // とりあえず3
-        .len = 0, 
-        .hdr = calloc(3, sizeof(DataList *))
-    };
-    
-    // MFTEntryに含まれるMFTAttributeの一覧を表示する。
+// Fileが持つAttributeの一覧を表示
+static void printAttributes(File *f) {
     puts("Attributes:");
-    puts("offset type size non-resident?");
-    while(ahdr->AttributeType != END_OF_ATTRIBUTE) {
+
+    List *l = f->attr;
+    for(int i = 0; i < l->len; i++) {
+        MFTAttributeHeader *hdr = l->data[i];
         printf(
             "+%#lx: %#x(%s) %#x %d\n",
-            (uint8_t *)ahdr - info.Base,
-            ahdr->AttributeType,
-            printAttributeType(ahdr->AttributeType),
-            ahdr->Size,
-            ahdr->NonRegidentFlag
+            (uint8_t *)hdr - volume.base,
+            hdr->AttributeType,
+            printAttributeType(hdr->AttributeType),
+            hdr->Size,
+            hdr->NonRegidentFlag
         );
-        
-        switch(ahdr->AttributeType) {
-            case FILE_NAME:
-                fname = ahdr;
-                break;
-            case DATA:
-                if(l.len < l.cap) {
-                    l.hdr[l.len++] = ahdr;
-                }
-                break;
-        }
-
-        ahdr = next_attr(ahdr);
-    }
-    putchar('\n');
-
-    parseFnameAttribute(fname);
-    parseDataAttributes(&l);
-}
-
-// MFTEntryに含まれるAttributeから指定した種類のものを探す
-static MFTAttributeHeader * findAttribute(MFTEntryHeader *hdr, AttributeTypes ty) {
-    MFTAttributeHeader *attr = (MFTAttributeHeader *)((uint8_t *)hdr + hdr->AttributeOffset);
-    int64_t remain = hdr->UsedEntrySize - hdr->AttributeOffset;
-
-    while(1) {
-        if(attr->AttributeType == ty)
-            return attr;
-        
-        remain -= attr->Size;
-        if(remain <= 0)
-            return NULL;
-        
-        attr = (MFTAttributeHeader *)((uint8_t *)attr + attr->Size);        
     }
 }
 
-static void collectInfo(VolumeHeader *hdr) {
-    // 重要な情報をグローバルに保存
-    info = (Info){
-        .Base           = (uint8_t *)hdr,
-        .ClusterSize    = cluster_size(hdr),
-        .MFTEntrySize   = entry_size(hdr->MFTEntrySize)
-    };
+// Fileが持つdataの一覧を表示
+static void printDataList(File *f) {
+    puts("Data list:");
 
-    // 最初のエントリは$MFT。
-    MFTEntryHeader *entry = (MFTEntryHeader *)((uint8_t *)hdr + info.ClusterSize * hdr->MFTClusterBlockNumber);
-    MFTAttributeHeader *data = findAttribute(entry, DATA);
-   
-    if(!data)
-        exit(1);
+    List *l = f->data;
+    Data *d;
 
-    info.EntryTable.NonResidentFlag = data->NonRegidentFlag;
-
-    if(info.EntryTable.NonResidentFlag) {
-        // 先頭1byteの下位4bitがdataの長さを、上位4bitがoffsetの長さをbyte単位で表す。
-        int i = 0;
-        uint8_t dataLen, deltaLen;
-        uint64_t len = 0;
-        // delataは符号付で、前のrunsのoffsetからの相対値(クラスタ単位)になる。
-        int64_t offset = 0;
-        uint8_t *l = data_run_list(data);
-
-        dataLen  = l[i] & 0x0f;
-        deltaLen = (l[i]>>4) & 0x0f;
-        i++;
-
-        // とりあえず一番最初のdata runのみ読む。
-        for(int j = 0; j < dataLen; j++) {
-            len += l[i++] << 8 * j;
-        }
-        for(int j = 0; j < deltaLen; j++) {
-            offset += l[i++] << 8 * j;
-        }
-
-        info.EntryTable.NumEntry = len * info.ClusterSize / info.MFTEntrySize;
-        info.EntryTable.Hdr[0] = (MFTEntryHeader *)((uint8_t *)hdr +  offset * info.ClusterSize);
-
-    } else {
-        info.EntryTable.NumEntry = ((ResidentMFTAttribute *)attr(data))->DataSize / info.MFTEntrySize;
-        info.EntryTable.Hdr[0] = (MFTEntryHeader *)((uint8_t *)data + ((ResidentMFTAttribute *)attr(data))->DataOffset);
+    for(int i = 0; i < l->len; i++) {
+        d = l->data[i];
+        printf(
+            "+%#lx %#lx\n",
+            (uint8_t *)d->p - volume.base,
+            d->size
+        );
     }
 }
 
-static void parseVolume(VolumeHeader *hdr) {
-    collectInfo(hdr);
-    uint64_t i;
+// fileの情報を表示
+static void printFileInfo(File *f) {
     printf(
-        "Cluster size: %#lx\nMFTEntrySize: %#lx\nNumEntry: %#lx\n",
-        info.ClusterSize,
-        info.MFTEntrySize,
-        info.EntryTable.NumEntry
+        "name: %s\nCTime: %s\nMTime: %s\n",
+        f->name,
+        f->CTIME,
+        f->MTIME
     );
+    printAttributes(f);
+    printDataList(f);
+}
 
-    while(true) {
-        printf("index: ");
-
-        scanf("%lu", &i);
-        
-        if(info.EntryTable.NumEntry <= i) {
-            puts("invalid index");
-            continue;
-        }
-
-        // 指定されたindexのMFTEntryを解析
-        parseMFTEntry(i);
+// 指定されたindexのEntryを解析。未使用で無ければデータを収集してFile構造体に格納して返す。
+static File * parseMFTEntry(MFTEntryHeader *hdr) {
+    // AttributeOffsetが0なら未使用と判断する。本当は$BITMAPを読むべき
+    if(!hdr->AttributeOffset) {
+        return NULL;
     }
+
+    // TODO: update sequeceの比較処理を関数として実装する。
+
+    File *f = calloc(1, sizeof(File));
+    f->attr = collectAttributes(hdr);
+
+    parseDataAttributes(f);
+    parseFnameAttribute(f);
+    
+    return f;
+}
+
+// volumeの情報をグローバルに保存
+static void collectVolumeInfo(VolumeHeader *hdr) {
+    volume = (Volume) {
+        .base = (uint8_t *)hdr,
+        .clusterSize    = cluster_size(hdr),
+        .mftEntrySize   = entry_size(hdr->MFTEntrySize)
+    };
+    volume.mftOffset    = volume.clusterSize * hdr->MFTClusterBlockNumber;
+}
+
+// 指定されたindexへのポインタを返す。
+static MFTEntryHeader * idx2entry(uint64_t i) {
+    List *d = mft->data;
+    uint64_t numEntry = ((Data *)(d->data[0]))->size / volume.mftEntrySize;
+
+    if(numEntry <= i) {
+        return NULL;
+    }
+
+    // MFTのDATAが複数存在する場合は考慮してない。
+    return (MFTEntryHeader *)((uint8_t *)((Data *)(d->data[0]))->p + i * volume.mftEntrySize);
 }
 
 int main(int argc, char *argv[]) { 
@@ -377,8 +357,47 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    parseVolume((VolumeHeader *)base);
+    collectVolumeInfo((VolumeHeader *)base);
+    printf(
+        "base: %p\nclusterSize: %#lx\nmftEntrySize: %#lx\nmftOffset: %#lx\n",
+        volume.base,
+        volume.clusterSize,
+        volume.mftEntrySize,
+        volume.mftOffset
+    );
 
+    mft = parseMFTEntry((MFTEntryHeader *)(base + volume.mftOffset));
+    if(!mft || !mft->data->len) {
+        exit(1);
+    }
+
+    uint64_t i;
+    MFTEntryHeader *e;
+    File *f;
+    while(true) {
+        printf("index: ");
+
+        scanf("%lu", &i);
+
+        e = idx2entry(i);
+
+        if(!e) {
+            puts("invalid index");
+            continue;
+        }        
+
+        f = parseMFTEntry(e);
+
+        if(!f) {
+            puts("unused entry");
+            continue;
+        }
+
+        printFileInfo(f);
+        deleteFile(f);
+    }
+
+    deleteFile(mft);
     munmap((void *)base, sb.st_size);
     close(fd);
 

@@ -82,6 +82,9 @@ typedef struct __attribute__((packed)) {
     uint32_t        Unknown;
 } MFTEntryHeader;
 
+// hdrはMFTEntryHeader*型
+#define attr_hdr(hdr) ((MFTAttributeHeader *)((uint8_t *)hdr + hdr->AttributeOffset))
+
 // MFTAttributeHeader defined on 5.5.1
 typedef struct __attribute__((packed)) {
     uint32_t    AttributeType;
@@ -176,24 +179,35 @@ typedef enum {
 // hdrはMFTEntryHeader*型かつResident。
 #define fname_attribute(hdr) ((FileNameAttribute *)((uint8_t *)hdr + ((ResidentMFTAttribute *)attr(hdr))->DataOffset))
 
-// $MFTの$DATAがNon-residentだった場合に使用される。
-typedef struct {
-    bool            NonResidentFlag;
-    uint64_t        NumEntry;
-    MFTEntryHeader *Hdr[1]; // とりあえず1つのみ。
-} MFTEntryTable;
-
-typedef struct {
-    uint64_t        ClusterSize;
-    uint64_t        MFTEntrySize;
-    uint8_t         *Base;
-    MFTEntryTable   EntryTable;
-} Info;
-
 typedef struct {
     int cap;
     int len;
-    MFTAttributeHeader **hdr;
-} DataList;
+    void **data;
+} List;
+
+typedef enum {
+    D,  // Data
+    A,  // Attribute
+} ListType;
+
+typedef struct {
+    void        *p;
+    uint64_t    size;
+} Data;
+
+typedef struct {
+    uint8_t         *base;
+    uint64_t        clusterSize;
+    uint64_t        mftEntrySize;
+    uint64_t        mftOffset;
+} Volume;
+
+typedef struct {
+    char *name;
+    char *CTIME;
+    char *MTIME;
+    List *attr; // Fileが持つ全てのAttributeのリスト
+    List *data; // Fileが持つデータのリスト
+} File;
 
 #endif 
