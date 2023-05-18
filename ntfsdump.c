@@ -302,9 +302,19 @@ static File * parseMFTEntry(MFTEntryHeader *hdr) {
     // AttributeOffsetが0なら未使用と判断する。本当は$BITMAPを読むべき
     if(!hdr->AttributeOffset) {
         return NULL;
-    }
+    }   
+    
+    // update sequenceを比較して一致した場合は元のデータを復元する
+    uint16_t *seq = (uint16_t *)((uint8_t *)hdr + hdr->FixupValueOffset);
+    uint16_t *end_sector;
 
-    // TODO: update sequeceの比較処理を関数として実装する。
+    for(int i = 1; i < hdr->NumberOfFixupValues; i++) {
+        end_sector = (uint16_t *)((uint8_t *)hdr + volume.bytesPerSector * i);
+        if(seq[0] == end_sector[-1])
+            end_sector[-1] = seq[i];
+        else 
+            printf("fixup placeholder value unmatched: %#x %#x\n", seq[0], end_sector[-1]);
+    }
 
     File *f = calloc(1, sizeof(File));
     f->attr = collectAttributes(hdr);
@@ -317,8 +327,10 @@ static File * parseMFTEntry(MFTEntryHeader *hdr) {
 
 // volumeの情報をグローバルに保存
 static void collectVolumeInfo(VolumeHeader *hdr) {
+    printf("sector size: %#x\n", hdr->BytesPerSector);
     volume = (Volume) {
         .base = (uint8_t *)hdr,
+        .bytesPerSector = hdr->BytesPerSector,
         .clusterSize    = cluster_size(hdr),
         .mftEntrySize   = entry_size(hdr->MFTEntrySize)
     };
@@ -397,7 +409,7 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    if((fd = open(argv[1], O_RDONLY)) == -1) {
+    if((fd = open(argv[1], O_RDWR)) == -1) {
         perror("open: ");
         exit(1);
     }
@@ -409,7 +421,7 @@ int main(int argc, char *argv[]) {
 
     uint8_t *base;
 
-    base = mmap(NULL, sb.st_size, PROT_READ, MAP_SHARED, fd, 0);
+    base = mmap(NULL, sb.st_size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
 
     if(base == MAP_FAILED) {
         perror("mmap");
@@ -445,6 +457,8 @@ int main(int argc, char *argv[]) {
             puts("invalid index");
             continue;
         }        
+
+        printf("Entry(+%#lx)\n", (uint8_t *)e - volume.base);
 
         f = parseMFTEntry(e);
 

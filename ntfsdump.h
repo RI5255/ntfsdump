@@ -197,6 +197,7 @@ typedef struct {
 
 typedef struct {
     uint8_t         *base;
+    uint16_t        bytesPerSector;
     uint64_t        clusterSize;
     uint64_t        mftEntrySize;
     uint64_t        mftOffset;
